@@ -74,6 +74,8 @@ type Problem
     | ExpectingExponentStart
     | ExpectingFloatInfinity
     | ExpectingFloatNan
+    | ExpectingTrue
+    | ExpectingFalse
     | UnknownValue { start : ( Int, Int ), end : ( Int, Int ) }
 
 
@@ -300,6 +302,7 @@ valueParser =
         [ Parser.Advanced.succeed String
             |= stringParser
         , numberParser
+        , booleanParser
         ]
 
 
@@ -829,3 +832,13 @@ negateParser =
 
 
 -- BOOLEAN
+
+
+booleanParser : Parser Value
+booleanParser =
+    Parser.Advanced.oneOf
+        [ Parser.Advanced.succeed (Boolean True)
+            |. Parser.Advanced.token (Parser.Advanced.Token "true" ExpectingTrue)
+        , Parser.Advanced.succeed (Boolean False)
+            |. Parser.Advanced.token (Parser.Advanced.Token "false" ExpectingFalse)
+        ]
