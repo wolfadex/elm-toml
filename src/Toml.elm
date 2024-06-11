@@ -4,6 +4,7 @@ module Toml exposing (parse)
 -}
 
 import Array exposing (Array)
+import Parser
 import Parser.Advanced exposing ((|.), (|=))
 import Parser.Advanced.Workaround
 import Set exposing (Set)
@@ -70,6 +71,9 @@ type Problem
     | ExpectingOctalStart
     | ExpectingBinaryStart
     | ExpectingFloatDecimal
+    | ExpectingExponentStart
+    | ExpectingFloatInfinity
+    | ExpectingFloatNan
     | UnknownValue { start : ( Int, Int ), end : ( Int, Int ) }
 
 
@@ -542,15 +546,24 @@ numberParser =
 integerParser : Parser Value
 integerParser =
     Parser.Advanced.succeed
-        (\sign value ->
-            Integer (sign value)
+        (\shouldNegate value ->
+            Integer
+                (if shouldNegate then
+                    negate value
+
+                 else
+                    value
+                )
         )
-        |= parseNumberSign
+        |= negateParser
         |= Parser.Advanced.oneOf
-            [ decimalIntParser
-            , hexIntParser
+            [ hexIntParser
+                |> Parser.Advanced.backtrackable
             , octalIntParser
+                |> Parser.Advanced.backtrackable
             , binaryIntParser
+                |> Parser.Advanced.backtrackable
+            , decimalIntParser
             ]
 
 
@@ -689,39 +702,130 @@ binaryIntParser =
 floatParser : Parser Value
 floatParser =
     Parser.Advanced.succeed
-        (\sign beforeDecimal afterDecimal ->
-            -- Float (sign value)
-            ( sign, beforeDecimal ++ afterDecimal )
-        )
-        |= parseNumberSign
-        |= (Parser.Advanced.succeed ()
-                |. Parser.Advanced.chompIf Char.isDigit ExpectingDigit
-                |. Parser.Advanced.chompWhile (\char -> Char.isDigit char || char == '_')
-                |> Parser.Advanced.getChompedString
-           )
-        |. Parser.Advanced.token (Parser.Advanced.Token "." ExpectingFloatDecimal)
-        |= (Parser.Advanced.succeed ()
-                |. Parser.Advanced.chompIf Char.isDigit ExpectingDigit
-                |. Parser.Advanced.chompWhile (\char -> Char.isDigit char || char == '_')
-                |> Parser.Advanced.getChompedString
-           )
-        |> Parser.Advanced.andThen
-            (\intStr ->
-                case String.toInt (String.replace "_" "" intStr) of
-                    Nothing ->
-                        Parser.Advanced.problem ExpectingInt
+        (\shouldNegate value ->
+            case value of
+                Err i ->
+                    Integer
+                        (if shouldNegate then
+                            negate i
 
-                    Just i ->
-                        Parser.Advanced.succeed i
+                         else
+                            i
+                        )
+
+                Ok f ->
+                    Float
+                        (if shouldNegate then
+                            negate f
+
+                         else
+                            f
+                        )
+        )
+        |= negateParser
+        |= Parser.Advanced.oneOf
+            [ floatLiteralParser
+            , floatNamedParser
+            ]
+
+
+floatLiteralParser : Parser (Result Int Float)
+floatLiteralParser =
+    Parser.Advanced.succeed
+        (\integerPortion decimalPortion exponent ->
+            { integerPortion = integerPortion
+            , decimalPortion = decimalPortion
+            , exponent = exponent
+            }
+        )
+        |= decimalIntParser
+        |= Parser.Advanced.oneOf
+            [ floatDecimalParser
+                |> Parser.Advanced.map Just
+            , Parser.Advanced.succeed Nothing
+            ]
+        |= Parser.Advanced.oneOf
+            [ floatExponentParser
+                |> Parser.Advanced.map Just
+            , Parser.Advanced.succeed Nothing
+            ]
+        |> Parser.Advanced.andThen
+            (\parts ->
+                case ( parts.decimalPortion, parts.exponent ) of
+                    ( Nothing, Nothing ) ->
+                        parts.integerPortion
+                            |> toFloat
+                            |> round
+                            |> Err
+                            |> Parser.Advanced.succeed
+
+                    _ ->
+                        let
+                            decimal : String
+                            decimal =
+                                "." ++ Maybe.withDefault "0" parts.decimalPortion
+                        in
+                        case String.toFloat (String.fromInt parts.integerPortion ++ decimal) of
+                            Nothing ->
+                                Debug.todo ""
+
+                            Just f ->
+                                let
+                                    exponent : Float
+                                    exponent =
+                                        toFloat (Maybe.withDefault 0 parts.exponent)
+                                in
+                                Parser.Advanced.succeed (Ok (f * 10.0 ^ exponent))
             )
 
 
-parseNumberSign : Parser (number -> number)
-parseNumberSign =
+floatDecimalParser : Parser String
+floatDecimalParser =
+    Parser.Advanced.succeed ()
+        |. Parser.Advanced.token (Parser.Advanced.Token "." ExpectingFloatDecimal)
+        |. Parser.Advanced.chompIf Char.isDigit ExpectingDigit
+        |. Parser.Advanced.chompWhile (\char -> Char.isDigit char || char == '_')
+        |> Parser.Advanced.getChompedString
+
+
+floatExponentParser : Parser Int
+floatExponentParser =
+    Parser.Advanced.succeed
+        (\shouldNegate i ->
+            if shouldNegate then
+                negate i
+
+            else
+                i
+        )
+        |. Parser.Advanced.oneOf
+            [ Parser.Advanced.token (Parser.Advanced.Token "e" ExpectingExponentStart)
+            , Parser.Advanced.token (Parser.Advanced.Token "E" ExpectingExponentStart)
+            ]
+        |= negateParser
+        |= decimalIntParser
+
+
+floatNamedParser : Parser Float
+floatNamedParser =
     Parser.Advanced.oneOf
-        [ Parser.Advanced.succeed identity
-            |. Parser.Advanced.token (Parser.Advanced.Token "+" ExpectingPlusSymbol)
-        , Parser.Advanced.succeed negate
-            |. Parser.Advanced.token (Parser.Advanced.Token "-" ExpectingMinusSymbol)
-        , Parser.Advanced.succeed identity
+        [ Parser.Advanced.succeed (1 / 0)
+            |. Parser.Advanced.token (Parser.Advanced.Token "inf" ExpectingFloatInfinity)
+        , Parser.Advanced.succeed (0 / 0)
+            |. Parser.Advanced.token (Parser.Advanced.Token "nan" ExpectingFloatNan)
         ]
+
+
+negateParser : Parser Bool
+negateParser =
+    Parser.Advanced.oneOf
+        [ Parser.Advanced.succeed False
+            |. Parser.Advanced.token (Parser.Advanced.Token "+" ExpectingPlusSymbol)
+        , Parser.Advanced.succeed True
+            |. Parser.Advanced.token (Parser.Advanced.Token "-" ExpectingMinusSymbol)
+        , Parser.Advanced.succeed False
+        ]
+
+
+
+-- BOOLEAN
