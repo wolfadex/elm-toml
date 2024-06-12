@@ -2,11 +2,14 @@
     "name": "elm-toml",
     "version": "1.0.0",
     "description": "",
-    "scripts": { "test": "elm-test" },
+    "scripts": {
+        "test": "elm-test"
+    },
     "author": "Wolfgang Schuster",
     "license": "MIT",
     "devDependencies": {
         "elm": "^0.19.1-6",
+        "elm-doc-preview": "^5.0.5",
         "elm-format": "^0.8.7",
         "elm-review": "^2.11.2",
         "elm-test": "^0.19.1-revision12"

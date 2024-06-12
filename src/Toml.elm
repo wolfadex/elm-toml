@@ -1,36 +1,65 @@
-module Toml exposing (..)
+module Toml exposing
+    ( BetterToml
+    , Key, Value(..)
+    , parse
+    , Error(..)
+    , Time(..)
+    )
 
-{-| <https://toml.io/en/v1.0.0>
+{-| Parse a [TOML](https://toml.io/en/v1.0.0) file to a queryable Elm structure.
+
+@docs BetterToml
+@docs Key, Value
+
+@docs parse
+
+@docs Error
+
 -}
 
 import Array exposing (Array)
-import Parser
 import Parser.Advanced exposing ((|.), (|=))
 import Parser.Advanced.Workaround
 import Set exposing (Set)
+
+
+{-| -}
+type alias BetterToml =
+    List ( Key, Value )
 
 
 type alias Toml =
     List Expression
 
 
+{-| -}
 type Value
     = String String
     | Integer Int
     | Float Float
     | Boolean Bool
-    | Offset -- Date-Time
-    | Local -- Date-Time
+    | Time Time
+      -- | Offset -- Date-Time
+      -- | Local -- Date-Time
       -- | Local -- Date
       -- | Local -- Time
     | Array (Array Value)
     | InlineTable (List ( Key, Value ))
 
 
+type Time
+    = DateTimeOffset
+    | DateTimeLocal
+    | DateLocal
+    | TimeLocal
+
+
+{-| -}
 type alias Key =
     ( String, List String )
 
 
+{-| -}
 type Error
     = InvalidComment String
     | Other (Parser.Advanced.DeadEnd Context Problem)
@@ -95,6 +124,7 @@ type Problem
     | ExpectingEndOfFile
 
 
+{-| -}
 parse : String -> Result (List Error) Toml
 parse source =
     Parser.Advanced.run tomlParser source

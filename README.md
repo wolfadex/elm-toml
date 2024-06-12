@@ -22,3 +22,20 @@ Supported:
 - 🧪 Inline Table value
 - 🧪 tables
 - 🧪 array of tables
+
+-----
+# elm-rfc3339
+
+Parses a String into an [RFC 3339](https://datatracker.ietf.org/doc/html/rfc3339) date time format.
+
+Some examples of what these look like...
+
+A local time:
+
+    Rfc3339.parse "09:15:22" == TimeLocal { hour = 9, minute = 15, second = 22 }
+
+A local date:
+
+    Rfc3339
+
+For differences with ISO 8601, I recommend checking out <https://ijmacd.github.io/rfc3339-iso8601/>
