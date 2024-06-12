@@ -24,7 +24,7 @@ type Value
       -- | Local -- Date
       -- | Local -- Time
     | Array (Array Value)
-    | InlineTable ( Key, Value )
+    | InlineTable (List ( Key, Value ))
 
 
 type alias Key =
@@ -88,6 +88,9 @@ type Problem
     | ExpectingArrayTableEnd
     | ExpectingStandardTableStart
     | ExpectingStandardTableEnd
+    | ExpectingInlineTableStart
+    | ExpectingInlineTableSeparator
+    | ExpectingInlineTableEnd
     | UnknownValue { start : ( Int, Int ), end : ( Int, Int ) }
     | ExpectingEndOfFile
 
@@ -434,6 +437,7 @@ valueParsers =
     , booleanParser
     , stringParser
     , arrayParser
+    , inlineTableParser
     ]
 
 
@@ -1075,6 +1079,45 @@ type ArrayBuilder
 
 
 
+-- INLINE TABLE
+
+
+inlineTableParser : Parser Value
+inlineTableParser =
+    Parser.Advanced.succeed InlineTable
+        |= Parser.Advanced.sequence
+            { start = Parser.Advanced.Token "{" ExpectingInlineTableStart
+            , item =
+                Parser.Advanced.succeed Tuple.pair
+                    |= dottedkeyParser
+                    |. spacesParser
+                    |. Parser.Advanced.symbol (Parser.Advanced.Token "=" ExpectingKeyValueSeparator)
+                    |. spacesParser
+                    |= Parser.Advanced.lazy
+                        (\() -> Parser.Advanced.oneOf valueParsers)
+            , separator = Parser.Advanced.Token "," ExpectingInlineTableSeparator
+            , end = Parser.Advanced.Token "}" ExpectingInlineTableEnd
+            , spaces = spacesParser
+            , trailing = Parser.Advanced.Forbidden
+            }
+
+
+
+-- Parser.Advanced.succeed identity
+--     |. Parser.Advanced.token (Parser.Advanced.Token "{" ExpectingArrayStart)
+--     |= Parser.Advanced.loop (LookingForEndOrValue []) arrayParserHelper
+--     |> Parser.Advanced.andThen
+--         (\builder ->
+--             case builder of
+--                 Complete revValues ->
+--                     revValues
+--                         |> List.reverse
+--                         |> Array.fromList
+--                         |> Array
+--                         |> Parser.Advanced.succeed
+--                 _ ->
+--                     Parser.Advanced.problem (Debug.todo "")
+--         )
 -- TABLE
 
 

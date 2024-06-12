@@ -165,6 +165,23 @@ Some werds   \\
                         |> Toml.parse
                         |> Expect.ok
             ]
+        , describe "inline tables"
+            [ test "empty" <|
+                \() ->
+                    "carl = {}"
+                        |> Toml.parse
+                        |> Expect.ok
+            , test "single key/value" <|
+                \() ->
+                    "carl = { steve = 5 }"
+                        |> Toml.parse
+                        |> Expect.ok
+            , test "multi-key/value" <|
+                \() ->
+                    "carl = { steve = 5, \t\t\t'carl' = 'jenny', yes.no = true }"
+                        |> Toml.parse
+                        |> Expect.ok
+            ]
         ]
 
 

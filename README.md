@@ -19,6 +19,6 @@ Supported:
 - 🔮 Local Date value
 - 🔮 Local Time value
 - 🧪 Array value
-- 🔮 Inline Table value
+- 🧪 Inline Table value
 - 🚧 tables
 - 🚧 array of tables
