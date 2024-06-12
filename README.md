@@ -20,5 +20,5 @@ Supported:
 - 🔮 Local Time value
 - 🧪 Array value
 - 🧪 Inline Table value
-- 🚧 tables
-- 🚧 array of tables
+- 🧪 tables
+- 🧪 array of tables

@@ -17,6 +17,7 @@ suite =
                     |> Expect.ok
         , keyBasics
         , valueBasics
+        , tableBasics
         ]
 
 
@@ -183,6 +184,57 @@ Some werds   \\
                         |> Expect.ok
             ]
         ]
+
+
+tableBasics : Test
+tableBasics =
+    describe "table basics"
+        [ describe "standard table"
+            [ test "empty" <|
+                \() ->
+                    "[empty.table]"
+                        |> Toml.parse
+                        |> Expect.ok
+            , test "non-empty" <|
+                \() ->
+                    """[a.'table']
+carl = 5
+steve = false
+"""
+                        |> Toml.parse
+                        |> Expect.ok
+            ]
+        , describe "array of tables"
+            [ test "empty" <|
+                \() ->
+                    "[[empty]]"
+                        |> Toml.parse
+                        |> Expect.ok
+            , test "non-empty" <|
+                \() ->
+                    """[[a.'table']]
+carl = 5
+steve = false
+"""
+                        |> Toml.parse
+                        |> Expect.ok
+            , test "multi-entry" <|
+                \() ->
+                    """[[arrTable.first]]
+value = 5
+
+[[arrTable.second]]
+
+value = false
+"""
+                        |> Toml.parse
+                        |> Expect.ok
+            ]
+        ]
+
+
+
+--
 
 
 formatGeneratedFloat : Float -> String

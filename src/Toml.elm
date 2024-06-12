@@ -1140,9 +1140,12 @@ arrayTableParser =
         |. Parser.Advanced.token (Parser.Advanced.Token "[[" ExpectingArrayTableStart)
         |= dottedkeyParser
         |. Parser.Advanced.token (Parser.Advanced.Token "]]" ExpectingArrayTableEnd)
-        |. spacesParser
-        |. newLineParser
+        |. whiteSpaceParser
         |= Parser.Advanced.loop [] tableValuesParser
+
+
+
+-- |> Parser.Advanced.backtrackable
 
 
 standardTableParser : Parser Table
@@ -1151,8 +1154,7 @@ standardTableParser =
         |. Parser.Advanced.token (Parser.Advanced.Token "[" ExpectingStandardTableStart)
         |= dottedkeyParser
         |. Parser.Advanced.token (Parser.Advanced.Token "]" ExpectingStandardTableEnd)
-        |. spacesParser
-        |. newLineParser
+        |. whiteSpaceParser
         |= Parser.Advanced.loop [] tableValuesParser
 
 
@@ -1161,5 +1163,6 @@ tableValuesParser revValues =
     Parser.Advanced.oneOf
         [ Parser.Advanced.succeed (\value -> Parser.Advanced.Loop (value :: revValues))
             |= keyValueParser
+            |> Parser.Advanced.backtrackable
         , Parser.Advanced.succeed (Parser.Advanced.Done (List.reverse revValues))
         ]
