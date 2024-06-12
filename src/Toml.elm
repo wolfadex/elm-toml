@@ -1,4 +1,4 @@
-module Toml exposing (parse)
+module Toml exposing (..)
 
 {-| <https://toml.io/en/v1.0.0>
 -}
@@ -10,8 +10,8 @@ import Parser.Advanced.Workaround
 import Set exposing (Set)
 
 
-type Toml
-    = List ( String, Value )
+type alias Toml =
+    List Expression
 
 
 type Value
@@ -24,11 +24,16 @@ type Value
       -- | Local -- Date
       -- | Local -- Time
     | Array (Array Value)
-    | InlineTable ( String, Value )
+    | InlineTable ( Key, Value )
+
+
+type alias Key =
+    ( String, List String )
 
 
 type Error
-    = Error_TODO
+    = InvalidComment String
+    | Other (Parser.Advanced.DeadEnd Context Problem)
 
 
 type alias Parser a =
@@ -79,12 +84,97 @@ type Problem
     | ExpectingArrayStart
     | ExpectingArraySeparator
     | ExpectingArrayEnd
+    | ExpectingArrayTableStart
+    | ExpectingArrayTableEnd
+    | ExpectingStandardTableStart
+    | ExpectingStandardTableEnd
     | UnknownValue { start : ( Int, Int ), end : ( Int, Int ) }
+    | ExpectingEndOfFile
 
 
-parse : String -> Result Error Toml
+parse : String -> Result (List Error) Toml
 parse source =
-    Debug.todo ""
+    Parser.Advanced.run tomlParser source
+        |> Result.mapError (List.map (problemToError source))
+
+
+problemToError : String -> Parser.Advanced.DeadEnd Context Problem -> Error
+problemToError source deadEnd =
+    case deadEnd.problem of
+        InvaliadCommentCharacters details ->
+            let
+                invalidText =
+                    source
+                        |> String.split "\n"
+                        |> List.drop (Tuple.first details.start - 1)
+                        |> List.take 1
+                        |> String.join "\n"
+
+                errorNote =
+                    List.foldl
+                        (\index str ->
+                            String.left index str ++ "^" ++ String.dropLeft (index + 1) str
+                        )
+                        (String.repeat (String.length invalidText) " ")
+                        details.indicies
+            in
+            InvalidComment (String.join "\n" [ invalidText, errorNote ])
+
+        _ ->
+            Other deadEnd
+
+
+tomlParser : Parser Toml
+tomlParser =
+    Parser.Advanced.succeed List.reverse
+        |. spacesParser
+        |= Parser.Advanced.loop [] tomlBodyParser
+
+
+tomlBodyParser : List Expression -> Parser (Parser.Advanced.Step (List Expression) (List Expression))
+tomlBodyParser revExpressions =
+    Parser.Advanced.oneOf
+        [ Parser.Advanced.succeed
+            (Parser.Advanced.Done revExpressions)
+            |. Parser.Advanced.end ExpectingEndOfFile
+        , Parser.Advanced.succeed (\expr -> Parser.Advanced.Loop (expr :: revExpressions))
+            |= expressionParser
+        , Parser.Advanced.succeed
+            (Parser.Advanced.Loop revExpressions)
+            |. whiteSpaceParser
+        ]
+
+
+type Expression
+    = CommentExpr (Maybe String)
+    | KeyValueExpr ( Key, Value ) (Maybe String)
+    | TableExpr Table (Maybe String)
+
+
+expressionParser : Parser Expression
+expressionParser =
+    Parser.Advanced.oneOf
+        [ Parser.Advanced.succeed KeyValueExpr
+            |. spacesParser
+            |= keyValueParser
+            |. spacesParser
+            |= Parser.Advanced.oneOf
+                [ optionalCommentParser
+                , Parser.Advanced.succeed Nothing
+                    |. newLineParser
+                ]
+            |. whiteSpaceParser
+        , Parser.Advanced.succeed TableExpr
+            |. spacesParser
+            |= tableParser
+            |. spacesParser
+            |= optionalCommentParser
+            |. whiteSpaceParser
+        , Parser.Advanced.succeed CommentExpr
+            |. spacesParser
+            |= optionalCommentParser
+            |. whiteSpaceParser
+        ]
 
 
 spaceParser : Parser ()
@@ -189,7 +279,10 @@ commentParser =
                 |> Parser.Advanced.getChompedString
                 |> Parser.Advanced.map
                     (\str ->
-                        if String.endsWith "\u{000D}" str then
+                        if String.endsWith "\u{000D}\n" str then
+                            String.dropRight 2 str
+
+                        else if String.endsWith "\n" str then
                             String.dropRight 1 str
 
                         else
@@ -214,12 +307,12 @@ commentParser =
             )
 
 
-optionalCommentParser : Parser ()
+optionalCommentParser : Parser (Maybe String)
 optionalCommentParser =
     Parser.Advanced.oneOf
-        [ Parser.Advanced.map (\_ -> ())
+        [ Parser.Advanced.map Just
             commentParser
-        , Parser.Advanced.succeed ()
+        , Parser.Advanced.succeed Nothing
         ]
 
 
@@ -267,7 +360,7 @@ disallowedCommentChars =
     ]
 
 
-keyValueParser : Parser ( String, Value )
+keyValueParser : Parser ( Key, Value )
 keyValueParser =
     Parser.Advanced.succeed Tuple.pair
         |. spacesParser
@@ -278,9 +371,9 @@ keyValueParser =
         |= valueParser
 
 
-dottedkeyParser : Parser String
+dottedkeyParser : Parser Key
 dottedkeyParser =
-    Parser.Advanced.succeed (\first rest -> String.join "." (first :: rest))
+    Parser.Advanced.succeed Tuple.pair
         |= keyParser
         |= Parser.Advanced.loop [] dottedkeyParserHelper
 
@@ -293,6 +386,7 @@ dottedkeyParserHelper reverseKeys =
             |. Parser.Advanced.symbol (Parser.Advanced.Token "." ExpectingDottedKeySeparator)
             |. spacesParser
             |= keyParser
+            |> Parser.Advanced.backtrackable
         , Parser.Advanced.succeed (Parser.Advanced.Done (List.reverse reverseKeys))
         ]
 
@@ -319,8 +413,7 @@ quotedKeyParser =
         [ basicStringParser
             |> Parser.Advanced.map (\key -> "\"" ++ key ++ "\"")
         , literalStringParser
-
-        -- |> Parser.Advanced.map (\key -> "'" ++ key ++ "'")
+            |> Parser.Advanced.map (\key -> "'" ++ key ++ "'")
         ]
 
 
@@ -333,24 +426,15 @@ valueParser =
     Parser.Advanced.succeed identity
         |= Parser.Advanced.oneOf valueParsers
         |. spacesParser
-        |. valueEndParser
 
 
 valueParsers : List (Parser Value)
 valueParsers =
-    [ stringParser
-    , numberParser
+    [ numberParser
     , booleanParser
+    , stringParser
     , arrayParser
     ]
-
-
-valueEndParser : Parser ()
-valueEndParser =
-    Parser.Advanced.oneOf
-        [ Parser.Advanced.map (\_ -> ()) optionalCommentParser
-        , newLineParser
-        ]
 
 
 
@@ -815,11 +899,11 @@ floatLiteralParser =
                         let
                             decimal : String
                             decimal =
-                                "." ++ Maybe.withDefault "0" parts.decimalPortion
+                                Maybe.withDefault ".0" parts.decimalPortion
                         in
                         case String.toFloat (String.fromInt parts.integerPortion ++ decimal) of
                             Nothing ->
-                                Debug.todo ""
+                                Debug.todo (String.fromInt parts.integerPortion ++ decimal)
 
                             Just f ->
                                 let
@@ -989,3 +1073,47 @@ type ArrayBuilder
 
 
 -- TABLE
+
+
+type Table
+    = StandardTable Key (List ( Key, Value ))
+    | ArrayTable Key (List ( Key, Value ))
+
+
+tableParser : Parser Table
+tableParser =
+    Parser.Advanced.oneOf
+        [ arrayTableParser
+        , standardTableParser
+        ]
+
+
+arrayTableParser : Parser Table
+arrayTableParser =
+    Parser.Advanced.succeed ArrayTable
+        |. Parser.Advanced.token (Parser.Advanced.Token "[[" ExpectingArrayTableStart)
+        |= dottedkeyParser
+        |. Parser.Advanced.token (Parser.Advanced.Token "]]" ExpectingArrayTableEnd)
+        |. spacesParser
+        |. newLineParser
+        |= Parser.Advanced.loop [] tableValuesParser
+
+
+standardTableParser : Parser Table
+standardTableParser =
+    Parser.Advanced.succeed StandardTable
+        |. Parser.Advanced.token (Parser.Advanced.Token "[" ExpectingStandardTableStart)
+        |= dottedkeyParser
+        |. Parser.Advanced.token (Parser.Advanced.Token "]" ExpectingStandardTableEnd)
+        |. spacesParser
+        |. newLineParser
+        |= Parser.Advanced.loop [] tableValuesParser
+
+
+tableValuesParser : List ( Key, Value ) -> Parser (Parser.Advanced.Step (List ( Key, Value )) (List ( Key, Value )))
+tableValuesParser revValues =
+    Parser.Advanced.oneOf
+        [ Parser.Advanced.succeed (\value -> Parser.Advanced.Loop (value :: revValues))
+            |= keyValueParser
+        , Parser.Advanced.succeed (Parser.Advanced.Done (List.reverse revValues))
+        ]

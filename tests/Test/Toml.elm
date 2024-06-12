@@ -1,0 +1,100 @@
+module Test.Toml exposing (suite)
+
+import Expect exposing (Expectation)
+import Fuzz exposing (Fuzzer)
+import Parser.Advanced
+import Test exposing (..)
+import Toml
+
+
+suite : Test
+suite =
+    describe "basics"
+        [ test "a comment" <|
+            \() ->
+                "# This is a full-line comment"
+                    |> Toml.parse
+                    |> Expect.ok
+        , describe "key basics"
+            [ test "bare key" <|
+                \() ->
+                    "carl = 5"
+                        |> Toml.parse
+                        |> Expect.ok
+            , test "dotted key" <|
+                \() ->
+                    "carl.steve = 5"
+                        |> Toml.parse
+                        |> Expect.ok
+            , test "quoted key" <|
+                \() ->
+                    "\"carl\" = 5"
+                        |> Toml.parse
+                        |> Expect.ok
+            , test "dotted mixed with spaces key" <|
+                \() ->
+                    "\"carl.steve\" .    jerry . THOMAS-_12345678dfghjklzxcvbnm = 5"
+                        |> Toml.parse
+                        |> Expect.ok
+            , test "all valid chars key" <|
+                \() ->
+                    "0123456789-_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ = 5"
+                        |> Toml.parse
+                        |> Expect.ok
+            ]
+        , describe "value basics"
+            [ fuzz Fuzz.int "int regular" <|
+                \i ->
+                    ("carl = " ++ String.fromInt i)
+                        |> Toml.parse
+                        |> Expect.ok
+            , fuzz (Fuzz.intAtLeast 0) "int +" <|
+                \i ->
+                    ("carl = +" ++ String.fromInt i)
+                        |> Toml.parse
+                        |> Expect.ok
+            , fuzz (Fuzz.intAtMost -1) "int -" <|
+                \i ->
+                    ("carl = " ++ String.fromInt i)
+                        |> Toml.parse
+                        |> Expect.ok
+            , fuzz Fuzz.float "float regular" <|
+                \f ->
+                    ("carl = " ++ formatGeneratedFloat f)
+                        |> Toml.parse
+                        |> Expect.ok
+            , fuzz (Fuzz.floatAtLeast 0) "float +" <|
+                \f ->
+                    ("carl = "
+                        ++ (if f >= 0 then
+                                "+"
+
+                            else
+                                ""
+                           )
+                        ++ formatGeneratedFloat f
+                    )
+                        |> Toml.parse
+                        |> Expect.ok
+            , fuzz (Fuzz.floatAtMost 0) "float -" <|
+                \f ->
+                    ("carl = " ++ formatGeneratedFloat f)
+                        |> Toml.parse
+                        |> Expect.ok
+            ]
+        ]
+
+
+formatGeneratedFloat : Float -> String
+formatGeneratedFloat f =
+    if f == (1 / 0) then
+        "inf"
+
+    else if f == (-1 / 0) then
+        "-inf"
+
+    else if isNaN f then
+        "nan"
+
+    else
+        String.fromFloat f
