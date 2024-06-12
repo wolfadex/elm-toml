@@ -23,8 +23,8 @@ type Value
     | Local -- Date-Time
       -- | Local -- Date
       -- | Local -- Time
-    | Array (Array ())
-    | Inline -- Table
+    | Array (Array Value)
+    | InlineTable ( String, Value )
 
 
 type Error
@@ -76,6 +76,9 @@ type Problem
     | ExpectingFloatNan
     | ExpectingTrue
     | ExpectingFalse
+    | ExpectingArrayStart
+    | ExpectingArraySeparator
+    | ExpectingArrayEnd
     | UnknownValue { start : ( Int, Int ), end : ( Int, Int ) }
 
 
@@ -136,11 +139,15 @@ whiteSpaceChars =
 
 spacesParser : Parser ()
 spacesParser =
+    Parser.Advanced.loop () spacesParserHelper
+
+
+spacesParserHelper : () -> Parser (Parser.Advanced.Step () ())
+spacesParserHelper () =
     Parser.Advanced.oneOf
-        [ Parser.Advanced.succeed ()
-            |. Parser.Advanced.chompIf (\char -> char == '\t' || char == ' ') ExpectingSpace
-            |. Parser.Advanced.chompWhile (\char -> char == '\t' || char == ' ')
-        , Parser.Advanced.succeed ()
+        [ Parser.Advanced.succeed (Parser.Advanced.Loop ())
+            |. spaceParser
+        , Parser.Advanced.succeed (Parser.Advanced.Done ())
         ]
 
 
@@ -154,6 +161,22 @@ newLineParser =
             ]
         |. Parser.Advanced.chompIf (\char -> char == '\n')
             ExpectingNewLine
+
+
+whiteSpaceParser : Parser ()
+whiteSpaceParser =
+    Parser.Advanced.loop () whiteSpaceParserHelper
+
+
+whiteSpaceParserHelper : () -> Parser (Parser.Advanced.Step () ())
+whiteSpaceParserHelper () =
+    Parser.Advanced.oneOf
+        [ Parser.Advanced.succeed (Parser.Advanced.Loop ())
+            |. spaceParser
+        , Parser.Advanced.succeed (Parser.Advanced.Loop ())
+            |. newLineParser
+        , Parser.Advanced.succeed (Parser.Advanced.Done ())
+        ]
 
 
 commentParser : Parser String
@@ -189,6 +212,15 @@ commentParser =
                         Parser.Advanced.problem
                             (InvaliadCommentCharacters { start = start, end = end, indicies = invalid })
             )
+
+
+optionalCommentParser : Parser ()
+optionalCommentParser =
+    Parser.Advanced.oneOf
+        [ Parser.Advanced.map (\_ -> ())
+            commentParser
+        , Parser.Advanced.succeed ()
+        ]
 
 
 {-| These control characters aren't allowed in comments:
@@ -298,11 +330,26 @@ quotedKeyParser =
 
 valueParser : Parser Value
 valueParser =
+    Parser.Advanced.succeed identity
+        |= Parser.Advanced.oneOf valueParsers
+        |. spacesParser
+        |. valueEndParser
+
+
+valueParsers : List (Parser Value)
+valueParsers =
+    [ stringParser
+    , numberParser
+    , booleanParser
+    , arrayParser
+    ]
+
+
+valueEndParser : Parser ()
+valueEndParser =
     Parser.Advanced.oneOf
-        [ Parser.Advanced.succeed String
-            |= stringParser
-        , numberParser
-        , booleanParser
+        [ Parser.Advanced.map (\_ -> ()) optionalCommentParser
+        , newLineParser
         ]
 
 
@@ -310,14 +357,15 @@ valueParser =
 -- STRINGS
 
 
-stringParser : Parser String
+stringParser : Parser Value
 stringParser =
-    Parser.Advanced.oneOf
-        [ basicStringParser
-        , multilineBasicStringParser
-        , literalStringParser
-        , multilineLiteralStringParser
-        ]
+    Parser.Advanced.succeed String
+        |= Parser.Advanced.oneOf
+            [ basicStringParser
+            , multilineBasicStringParser
+            , literalStringParser
+            , multilineLiteralStringParser
+            ]
 
 
 basicStringParser : Parser String
@@ -728,7 +776,8 @@ floatParser =
         |= negateParser
         |= Parser.Advanced.oneOf
             [ floatLiteralParser
-            , floatNamedParser
+            , Parser.Advanced.map Ok
+                floatNamedParser
             ]
 
 
@@ -842,3 +891,101 @@ booleanParser =
         , Parser.Advanced.succeed (Boolean False)
             |. Parser.Advanced.token (Parser.Advanced.Token "false" ExpectingFalse)
         ]
+
+
+
+-- TIME
+-- ARRAY
+
+
+arrayParser : Parser Value
+arrayParser =
+    Parser.Advanced.succeed identity
+        |. Parser.Advanced.token (Parser.Advanced.Token "[" ExpectingArrayStart)
+        |= Parser.Advanced.loop (LookingForEndOrValue []) arrayParserHelper
+        |> Parser.Advanced.andThen
+            (\builder ->
+                case builder of
+                    Complete revValues ->
+                        revValues
+                            |> List.reverse
+                            |> Array.fromList
+                            |> Array
+                            |> Parser.Advanced.succeed
+
+                    _ ->
+                        Parser.Advanced.problem (Debug.todo "")
+            )
+
+
+arrayParserHelper : ArrayBuilder -> Parser (Parser.Advanced.Step ArrayBuilder ArrayBuilder)
+arrayParserHelper builder =
+    Parser.Advanced.oneOf
+        [ Parser.Advanced.succeed
+            (case builder of
+                LookingForEndOrSeprator revValues ->
+                    Parser.Advanced.Done (Complete revValues)
+
+                LookingForEndOrValue revValues ->
+                    Parser.Advanced.Done (Complete revValues)
+
+                Complete revValues ->
+                    Parser.Advanced.Done (Complete revValues)
+
+                ArrayError ->
+                    Parser.Advanced.Done ArrayError
+            )
+            |. whiteSpaceParser
+            |. Parser.Advanced.token (Parser.Advanced.Token "]" ExpectingArrayEnd)
+        , Parser.Advanced.succeed ()
+            |. whiteSpaceParser
+            |. Parser.Advanced.token (Parser.Advanced.Token "," ExpectingArraySeparator)
+            |. whiteSpaceParser
+            |. optionalCommentParser
+            |. whiteSpaceParser
+            |> Parser.Advanced.map
+                (\() ->
+                    case builder of
+                        LookingForEndOrSeprator revValues ->
+                            Parser.Advanced.Loop (LookingForEndOrValue revValues)
+
+                        LookingForEndOrValue _ ->
+                            Parser.Advanced.Done ArrayError
+
+                        Complete _ ->
+                            Parser.Advanced.Done ArrayError
+
+                        ArrayError ->
+                            Parser.Advanced.Done ArrayError
+                )
+        , Parser.Advanced.succeed
+            (\value ->
+                case builder of
+                    LookingForEndOrSeprator _ ->
+                        Parser.Advanced.Done ArrayError
+
+                    LookingForEndOrValue revValues ->
+                        Parser.Advanced.Loop (LookingForEndOrSeprator (value :: revValues))
+
+                    Complete _ ->
+                        Parser.Advanced.Done ArrayError
+
+                    ArrayError ->
+                        Parser.Advanced.Done ArrayError
+            )
+            |= Parser.Advanced.lazy
+                (\() ->
+                    Parser.Advanced.oneOf valueParsers
+                )
+        ]
+
+
+type ArrayBuilder
+    = LookingForEndOrValue (List Value)
+    | LookingForEndOrSeprator (List Value)
+    | Complete (List Value)
+    | ArrayError
+
+
+
+-- TABLE
