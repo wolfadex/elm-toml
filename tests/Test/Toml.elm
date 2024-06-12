@@ -43,44 +43,95 @@ suite =
                         |> Expect.ok
             ]
         , describe "value basics"
-            [ fuzz Fuzz.int "int regular" <|
-                \i ->
-                    ("carl = " ++ String.fromInt i)
-                        |> Toml.parse
-                        |> Expect.ok
-            , fuzz (Fuzz.intAtLeast 0) "int +" <|
-                \i ->
-                    ("carl = +" ++ String.fromInt i)
-                        |> Toml.parse
-                        |> Expect.ok
-            , fuzz (Fuzz.intAtMost -1) "int -" <|
-                \i ->
-                    ("carl = " ++ String.fromInt i)
-                        |> Toml.parse
-                        |> Expect.ok
-            , fuzz Fuzz.float "float regular" <|
-                \f ->
-                    ("carl = " ++ formatGeneratedFloat f)
-                        |> Toml.parse
-                        |> Expect.ok
-            , fuzz (Fuzz.floatAtLeast 0) "float +" <|
-                \f ->
-                    ("carl = "
-                        ++ (if f >= 0 then
-                                "+"
+            [ -- Integer
+              describe "integers"
+                [ fuzz Fuzz.int "any" <|
+                    \i ->
+                        ("carl = " ++ String.fromInt i)
+                            |> Toml.parse
+                            |> Expect.ok
+                , fuzz (Fuzz.intAtLeast 0) "positive" <|
+                    \i ->
+                        ("carl = +" ++ String.fromInt i)
+                            |> Toml.parse
+                            |> Expect.ok
+                , fuzz (Fuzz.intAtMost -1) "negative" <|
+                    \i ->
+                        ("carl = " ++ String.fromInt i)
+                            |> Toml.parse
+                            |> Expect.ok
+                ]
 
-                            else
-                                ""
-                           )
-                        ++ formatGeneratedFloat f
-                    )
+            -- Float
+            , describe "floats"
+                [ fuzz Fuzz.float "any" <|
+                    \f ->
+                        ("carl = " ++ formatGeneratedFloat f)
+                            |> Toml.parse
+                            |> Expect.ok
+                , fuzz (Fuzz.floatAtLeast 0) "positive" <|
+                    \f ->
+                        ("carl = "
+                            ++ (if f >= 0 then
+                                    "+"
+
+                                else
+                                    ""
+                               )
+                            ++ formatGeneratedFloat f
+                        )
+                            |> Toml.parse
+                            |> Expect.ok
+                , fuzz (Fuzz.floatAtMost 0) "negative" <|
+                    \f ->
+                        ("carl = " ++ formatGeneratedFloat f)
+                            |> Toml.parse
+                            |> Expect.ok
+                ]
+
+            -- Boolean
+            , fuzz Fuzz.bool "boolean" <|
+                \b ->
+                    ("carl = " ++ formatGeneratedBool b)
                         |> Toml.parse
                         |> Expect.ok
-            , fuzz (Fuzz.floatAtMost 0) "float -" <|
-                \f ->
-                    ("carl = " ++ formatGeneratedFloat f)
-                        |> Toml.parse
-                        |> Expect.ok
+
+            -- String
+            , describe "strings"
+                [ test "basic" <|
+                    \() ->
+                        "carl = \"Some werds go here!\""
+                            |> Toml.parse
+                            |> Expect.ok
+                , test "basic multi-line" <|
+                    \() ->
+                        """carl = \"\"\"
+
+
+Some werds        \\
+
+
+go here!\"\"\""""
+                            |> Toml.parse
+                            |> Expect.ok
+                , test "literal" <|
+                    \() ->
+                        "carl = 'Some werds go here!'"
+                            |> Toml.parse
+                            |> Expect.ok
+                , test "literal multi-line" <|
+                    \() ->
+                        """carl = '''
+
+Some werds   \\
+            go here!
+
+
+'''
+"""
+                            |> Toml.parse
+                            |> Expect.ok
+                ]
             ]
         ]
 
@@ -98,3 +149,12 @@ formatGeneratedFloat f =
 
     else
         String.fromFloat f
+
+
+formatGeneratedBool : Bool -> String
+formatGeneratedBool b =
+    if b then
+        "true"
+
+    else
+        "false"

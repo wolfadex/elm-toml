@@ -445,10 +445,12 @@ stringParser : Parser Value
 stringParser =
     Parser.Advanced.succeed String
         |= Parser.Advanced.oneOf
-            [ basicStringParser
-            , multilineBasicStringParser
-            , literalStringParser
+            [ multilineBasicStringParser
+                |> Parser.Advanced.backtrackable
+            , basicStringParser
             , multilineLiteralStringParser
+                |> Parser.Advanced.backtrackable
+            , literalStringParser
             ]
 
 
