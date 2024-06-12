@@ -18,7 +18,7 @@ Supported:
 - 🔮 Local Date-Time value
 - 🔮 Local Date value
 - 🔮 Local Time value
-- 🚧 Array value
+- 🧪 Array value
 - 🔮 Inline Table value
 - 🚧 tables
 - 🚧 array of tables

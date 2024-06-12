@@ -1023,6 +1023,7 @@ arrayParserHelper builder =
             )
             |. whiteSpaceParser
             |. Parser.Advanced.token (Parser.Advanced.Token "]" ExpectingArrayEnd)
+            |> Parser.Advanced.backtrackable
         , Parser.Advanced.succeed ()
             |. whiteSpaceParser
             |. Parser.Advanced.token (Parser.Advanced.Token "," ExpectingArraySeparator)
