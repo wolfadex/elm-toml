@@ -304,7 +304,14 @@ tableBasics =
                 \() ->
                     "[empty.table]"
                         |> Toml.parse
-                        |> Expect.ok
+                        |> Expect.equal
+                            (Ok
+                                (Dict.singleton "empty"
+                                    (Toml.Table
+                                        (Dict.singleton "table" (Toml.Table Dict.empty))
+                                    )
+                                )
+                            )
             , test "non-empty" <|
                 \() ->
                     """[a.'table']
@@ -312,14 +319,37 @@ carl = 5
 steve = false
 """
                         |> Toml.parse
-                        |> Expect.ok
+                        |> Expect.equal
+                            (Ok
+                                (Dict.singleton "a"
+                                    (Toml.Table
+                                        (Dict.singleton "table"
+                                            (Toml.Table
+                                                (Dict.fromList
+                                                    [ ( "carl", Toml.Integer 5 )
+                                                    , ( "steve", Toml.Boolean False )
+                                                    ]
+                                                )
+                                            )
+                                        )
+                                    )
+                                )
+                            )
             ]
         , describe "array of tables"
-            [ test "empty" <|
-                \() ->
-                    "[[empty]]"
-                        |> Toml.parse
-                        |> Expect.ok
+            [ only <|
+                test "empty" <|
+                    \() ->
+                        "[[empty]]"
+                            |> Toml.parse
+                            |> Expect.equal
+                                (Ok
+                                    (Dict.singleton "empty"
+                                        (Toml.Table
+                                            Dict.empty
+                                        )
+                                    )
+                                )
             , test "non-empty" <|
                 \() ->
                     """[[a.'table']]

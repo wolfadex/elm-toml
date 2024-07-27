@@ -170,30 +170,8 @@ parse source =
 
                         TableExpr table _ ->
                             case table of
-                                StandardTable ( key, restKeys ) keyValues ->
-                                    List.foldl
-                                        (\tableKeyValue accum ->
-                                            case ( insertKeyValuePair tableKeyValue Dict.empty, accum ) of
-                                                ( Ok tbl, Ok a ) ->
-                                                    updateOrInsertOrError
-                                                        ( key
-                                                        , restKeys
-                                                        , Array (Array.fromList [ Table tbl ])
-                                                        )
-                                                        a
-                                                        |> Result.mapError List.singleton
-
-                                                ( Ok _, Err _ ) ->
-                                                    accum
-
-                                                ( Err e, Ok _ ) ->
-                                                    Err e
-
-                                                ( Err e, Err errs ) ->
-                                                    Err (errs ++ e)
-                                        )
-                                        (Ok acc)
-                                        keyValues
+                                StandardTable key keyValues ->
+                                    insertTable key keyValues acc
 
                                 ArrayTable ( key, restKeys ) keyValues ->
                                     List.foldl
@@ -251,6 +229,58 @@ insertKeyValuePair ( key, value ) toml =
                                         restKeys
                             in
                             insertOrError ( first, nestedTable ) toml
+
+
+insertTable : ParsedKey -> List ( ParsedKey, ParsedValue ) -> Toml -> Result (List Error) Toml
+insertTable ( key, nestedKeys ) values toml =
+    case Dict.get key toml of
+        Nothing ->
+            case nestedKeys of
+                [] ->
+                    let
+                        tableRes : Result (List Error) Toml
+                        tableRes =
+                            List.foldl
+                                (\kvPair ->
+                                    Result.andThen (insertKeyValuePair kvPair)
+                                )
+                                (Ok Dict.empty)
+                                values
+                    in
+                    tableRes
+                        |> Result.map
+                            (\table ->
+                                Dict.insert key (Table table) toml
+                            )
+
+                deepKey :: restKeys ->
+                    let
+                        tableRes : Result (List Error) Toml
+                        tableRes =
+                            List.foldl
+                                (\kvPair ->
+                                    Result.andThen (insertKeyValuePair kvPair)
+                                )
+                                (Ok Dict.empty)
+                                values
+                    in
+                    tableRes
+                        |> Result.map
+                            (\table ->
+                                let
+                                    nestedTable =
+                                        List.foldr
+                                            (\k t ->
+                                                Table (Dict.singleton k t)
+                                            )
+                                            (Table (Dict.singleton deepKey (Table table)))
+                                            restKeys
+                                in
+                                Dict.insert key nestedTable toml
+                            )
+
+        Just table ->
+            Debug.todo ""
 
 
 mapValue : ParsedValue -> Result (List Error) Value
@@ -352,13 +382,6 @@ insertOrError ( key, value ) toml =
 
 updateOrInsertOrError : ( Key, List Key, Value ) -> Toml -> Result Error Toml
 updateOrInsertOrError ( key, restKeys, value ) toml =
-    -- -- updateOrInsertOrErrorHelper key [] toml
-    -- case restKeys of
-    --     [] ->
-    -- Util.List.updateOrPush
-    --     (\val -> Debug.todo "")
-    --     value
-    --     toml
     case Dict.get key toml of
         Nothing ->
             case restKeys of
@@ -674,6 +697,10 @@ keyValueParser =
         |. Parser.Advanced.symbol (Parser.Advanced.Token "=" ExpectingKeyValueSeparator)
         |. spacesParser
         |= valueParser
+        |. Parser.Advanced.oneOf
+            [ newLineParser
+            , Parser.Advanced.end ExpectingEndOfFile
+            ]
 
 
 dottedkeyParser : Parser ParsedKey
