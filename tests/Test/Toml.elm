@@ -6,7 +6,7 @@ import Expect
 import Fuzz exposing (oneOf)
 import Parser.Advanced
 import Test exposing (..)
-import Toml
+import Toml exposing (Value(..))
 
 
 suite : Test
@@ -337,38 +337,169 @@ steve = false
                             )
             ]
         , describe "array of tables"
-            [ only <|
-                test "empty" <|
-                    \() ->
-                        "[[empty]]"
-                            |> Toml.parse
-                            |> Expect.equal
-                                (Ok
-                                    (Dict.singleton "empty"
-                                        (Toml.Table
-                                            Dict.empty
-                                        )
-                                    )
+            [ test "empty" <|
+                \() ->
+                    "[[empty]]"
+                        |> Toml.parse
+                        |> Expect.equal
+                            (Ok
+                                (Dict.singleton "empty"
+                                    (Toml.Array (Array.fromList [ Toml.Table Dict.empty ]))
                                 )
+                            )
             , test "non-empty" <|
                 \() ->
-                    """[[a.'table']]
+                    """[[a]]
 carl = 5
 steve = false
 """
                         |> Toml.parse
-                        |> Expect.ok
-            , test "multi-entry" <|
+                        |> Expect.equal
+                            (Ok
+                                (Dict.singleton "a"
+                                    (Toml.Array
+                                        (Array.fromList
+                                            [ Toml.Table
+                                                (Dict.fromList
+                                                    [ ( "carl", Toml.Integer 5 )
+                                                    , ( "steve", Toml.Boolean False )
+                                                    ]
+                                                )
+                                            ]
+                                        )
+                                    )
+                                )
+                            )
+            , test "multiple entries" <|
                 \() ->
-                    """[[arrTable.first]]
-value = 5
+                    """[[fruit]]
+name = "apple"
+cost = 5.5
 
-[[arrTable.second]]
-
-value = false
+[[fruit]]
+name = "banana"
 """
                         |> Toml.parse
-                        |> Expect.ok
+                        |> Expect.equal
+                            (Ok
+                                (Dict.singleton "fruit"
+                                    (Toml.Array
+                                        (Array.fromList
+                                            [ Toml.Table
+                                                (Dict.fromList
+                                                    [ ( "name", Toml.String "apple" )
+                                                    , ( "cost", Toml.Float 5.5 )
+                                                    ]
+                                                )
+                                            , Toml.Table
+                                                (Dict.fromList
+                                                    [ ( "name", Toml.String "banana" )
+                                                    ]
+                                                )
+                                            ]
+                                        )
+                                    )
+                                )
+                            )
+            , test "deep-entry" <|
+                \() ->
+                    """[[fruits]]
+name = "apple"
+
+[fruits.physical]  # subtable
+color = "red"
+shape = "round"
+
+[[fruits.varieties]]  # nested array of tables
+name = "red delicious"
+
+[[fruits.varieties]]
+name = "granny smith"
+
+
+[[fruits]]
+name = "banana"
+
+[[fruits.varieties]]
+name = "plantain"
+"""
+                        |> Toml.parse
+                        |> Expect.equal
+                            (Ok
+                                -- {
+                                --   "fruits": [
+                                --     {
+                                --       "name": "apple",
+                                --       "physical": {
+                                --         "color": "red",
+                                --         "shape": "round"
+                                --       },
+                                --       "varieties": [
+                                --         { "name": "red delicious" },
+                                --         { "name": "granny smith" }
+                                --       ]
+                                --     },
+                                --     {
+                                --       "name": "banana",
+                                --       "varieties": [
+                                --         { "name": "plantain" }
+                                --       ]
+                                --     }
+                                --   ]
+                                -- }
+                                (Dict.singleton "fruits"
+                                    (Toml.Array
+                                        (Array.fromList
+                                            [ Toml.Table
+                                                (Dict.fromList
+                                                    [ ( "name", Toml.String "apple" )
+                                                    , ( "physical"
+                                                      , Toml.Table
+                                                            (Dict.fromList
+                                                                [ ( "color", Toml.String "red" )
+                                                                , ( "shape", Toml.String "round" )
+                                                                ]
+                                                            )
+                                                      )
+                                                    , ( "varieties"
+                                                      , Toml.Array
+                                                            (Array.fromList
+                                                                [ Toml.Table
+                                                                    (Dict.fromList
+                                                                        [ ( "name", Toml.String "red delicious" )
+                                                                        ]
+                                                                    )
+                                                                , Toml.Table
+                                                                    (Dict.fromList
+                                                                        [ ( "name", Toml.String "granny smith" )
+                                                                        ]
+                                                                    )
+                                                                ]
+                                                            )
+                                                      )
+                                                    ]
+                                                )
+                                            , Toml.Table
+                                                (Dict.fromList
+                                                    [ ( "name", Toml.String "banana" )
+                                                    , ( "varieties"
+                                                      , Toml.Array
+                                                            (Array.fromList
+                                                                [ Toml.Table
+                                                                    (Dict.fromList
+                                                                        [ ( "name", Toml.String "plantain" )
+                                                                        ]
+                                                                    )
+                                                                ]
+                                                            )
+                                                      )
+                                                    ]
+                                                )
+                                            ]
+                                        )
+                                    )
+                                )
+                            )
             ]
         ]
 

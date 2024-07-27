@@ -173,30 +173,28 @@ parse source =
                                 StandardTable key keyValues ->
                                     insertTable key keyValues acc
 
-                                ArrayTable ( key, restKeys ) keyValues ->
-                                    List.foldl
-                                        (\tableKeyValue accum ->
-                                            case ( insertKeyValuePair tableKeyValue Dict.empty, accum ) of
-                                                ( Ok tbl, Ok a ) ->
-                                                    updateOrInsertOrError
-                                                        ( key
-                                                        , restKeys
-                                                        , Array (Array.fromList [ Table tbl ])
-                                                        )
-                                                        a
-                                                        |> Result.mapError List.singleton
-
-                                                ( Ok _, Err _ ) ->
-                                                    accum
-
-                                                ( Err e, Ok _ ) ->
-                                                    Err e
-
-                                                ( Err e, Err errs ) ->
-                                                    Err (errs ++ e)
-                                        )
-                                        (Ok acc)
-                                        keyValues
+                                ArrayTable key keyValues ->
+                                    -- List.foldl
+                                    --     (\tableKeyValue accum ->
+                                    --         case ( insertKeyValuePair tableKeyValue Dict.empty, accum ) of
+                                    --             ( Ok tbl, Ok a ) ->
+                                    --                 updateOrInsertOrError
+                                    --                     ( key
+                                    --                     , restKeys
+                                    --                     , Array (Array.fromList [ Table tbl ])
+                                    --                     )
+                                    --                     a
+                                    --                     |> Result.mapError List.singleton
+                                    --             ( Ok _, Err _ ) ->
+                                    --                 accum
+                                    --             ( Err e, Ok _ ) ->
+                                    --                 Err e
+                                    --             ( Err e, Err errs ) ->
+                                    --                 Err (errs ++ e)
+                                    --     )
+                                    --     (Ok acc)
+                                    --     keyValues
+                                    insertArrayOfTables key keyValues acc
                 )
                 (Ok Dict.empty)
             )
@@ -279,8 +277,184 @@ insertTable ( key, nestedKeys ) values toml =
                                 Dict.insert key nestedTable toml
                             )
 
-        Just table ->
+        Just (Table table) ->
             Debug.todo ""
+
+        Just (Array arr) ->
+            let
+                _ =
+                    Debug.log "key" ( key, nestedKeys )
+            in
+            case nestedKeys of
+                [] ->
+                    Debug.todo "err"
+
+                deepKey :: restKeys ->
+                    let
+                        tableRes : Result (List Error) Toml
+                        tableRes =
+                            List.foldl
+                                (\kvPair ->
+                                    Result.andThen (insertKeyValuePair kvPair)
+                                )
+                                (Ok Dict.empty)
+                                values
+                    in
+                    -- tableRes
+                    --     |> Result.map
+                    --         (\table ->
+                    --             let
+                    --                 nestedTable =
+                    --                     List.foldr
+                    --                         (\k t ->
+                    --                             Table (Dict.singleton k t)
+                    --                         )
+                    --                         (Table (Dict.singleton deepKey (Table table)))
+                    --                         restKeys
+                    --             in
+                    --             Dict.insert key nestedTable toml
+                    --         )
+                    Debug.todo ""
+
+        Just _ ->
+            let
+                _ =
+                    Debug.log "key" ( key, nestedKeys )
+            in
+            Debug.todo ""
+
+
+insertArrayOfTables : ParsedKey -> List ( ParsedKey, ParsedValue ) -> Toml -> Result (List Error) Toml
+insertArrayOfTables ( key, nestedKeys ) values toml =
+    case Dict.get key toml of
+        Nothing ->
+            case nestedKeys of
+                [] ->
+                    case values of
+                        [] ->
+                            Ok
+                                (Dict.insert key
+                                    (Array
+                                        (Array.fromList
+                                            [ Table Dict.empty ]
+                                        )
+                                    )
+                                    toml
+                                )
+
+                        _ ->
+                            let
+                                tableRes : Result (List Error) Toml
+                                tableRes =
+                                    List.foldl
+                                        (\kvPair ->
+                                            Result.andThen (insertKeyValuePair kvPair)
+                                        )
+                                        (Ok Dict.empty)
+                                        values
+                            in
+                            tableRes
+                                |> Result.map
+                                    (\table ->
+                                        Dict.insert key (Array (Array.fromList [ Table table ])) toml
+                                    )
+
+                deepKey :: restKeys ->
+                    -- let
+                    --     tableRes : Result (List Error) Toml
+                    --     tableRes =
+                    --         List.foldl
+                    --             (\kvPair ->
+                    --                 Result.andThen (insertKeyValuePair kvPair)
+                    --             )
+                    --             (Ok Dict.empty)
+                    --             values
+                    -- in
+                    -- tableRes
+                    --     |> Result.map
+                    --         (\table ->
+                    --             let
+                    --                 nestedTable =
+                    --                     List.foldr
+                    --                         (\k t ->
+                    --                             Table (Dict.singleton k t)
+                    --                         )
+                    --                         (Table (Dict.singleton deepKey (Table table)))
+                    --                         restKeys
+                    --             in
+                    --             Dict.insert key nestedTable toml
+                    --         )
+                    Debug.todo ""
+
+        Just (Array arr) ->
+            case nestedKeys of
+                [] ->
+                    case values of
+                        [] ->
+                            Ok
+                                (Dict.insert key
+                                    (Array
+                                        (Array.push
+                                            (Table Dict.empty)
+                                            arr
+                                        )
+                                    )
+                                    toml
+                                )
+
+                        _ ->
+                            let
+                                tableRes : Result (List Error) Toml
+                                tableRes =
+                                    List.foldl
+                                        (\kvPair ->
+                                            Result.andThen (insertKeyValuePair kvPair)
+                                        )
+                                        (Ok Dict.empty)
+                                        values
+                            in
+                            tableRes
+                                |> Result.map
+                                    (\table ->
+                                        Dict.insert key
+                                            (Array
+                                                (Array.push
+                                                    (Table table)
+                                                    arr
+                                                )
+                                            )
+                                            toml
+                                    )
+
+                deepKey :: restKeys ->
+                    -- let
+                    --     tableRes : Result (List Error) Toml
+                    --     tableRes =
+                    --         List.foldl
+                    --             (\kvPair ->
+                    --                 Result.andThen (insertKeyValuePair kvPair)
+                    --             )
+                    --             (Ok Dict.empty)
+                    --             values
+                    -- in
+                    -- tableRes
+                    --     |> Result.map
+                    --         (\table ->
+                    --             let
+                    --                 nestedTable =
+                    --                     List.foldr
+                    --                         (\k t ->
+                    --                             Table (Dict.singleton k t)
+                    --                         )
+                    --                         (Table (Dict.singleton deepKey (Table table)))
+                    --                         restKeys
+                    --             in
+                    --             Dict.insert key nestedTable toml
+                    --         )
+                    Debug.todo ""
+
+        Just _ ->
+            Err [ TriedToChangeValue { from = "Array", to = "???" } ]
 
 
 mapValue : ParsedValue -> Result (List Error) Value
