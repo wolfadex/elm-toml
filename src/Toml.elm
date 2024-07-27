@@ -1,15 +1,13 @@
 module Toml exposing
-    ( BetterToml
-    , Key, Value(..)
-    , parse
+    ( parse
     , Error(..)
-    , Time(..)
+    , Key, Toml, Value(..)
     )
 
 {-| Parse a [TOML](https://toml.io/en/v1.0.0) file to a queryable Elm structure.
 
 @docs BetterToml
-@docs Key, Value
+@docs ParsedKey, ParsedValue
 
 @docs parse
 
@@ -18,17 +16,26 @@ module Toml exposing
 -}
 
 import Array exposing (Array)
+import Dict exposing (Dict)
 import Parser.Advanced exposing ((|.), (|=))
 import Parser.Advanced.Workaround
+import Rfc3339
 import Set exposing (Set)
+import Time
+import Util.List
+import Util.Result
 
 
 {-| -}
-type alias BetterToml =
-    List ( Key, Value )
-
-
 type alias Toml =
+    Dict Key Value
+
+
+type alias Key =
+    String
+
+
+type alias ParsedToml =
     List Expression
 
 
@@ -38,30 +45,31 @@ type Value
     | Integer Int
     | Float Float
     | Boolean Bool
-    | Time Time
-      -- | Offset -- Date-Time
-      -- | Local -- Date-Time
-      -- | Local -- Date
-      -- | Local -- Time
+    | DateTime Rfc3339.DateTime
     | Array (Array Value)
-    | InlineTable (List ( Key, Value ))
+    | Table (Dict Key Value)
 
 
-type Time
-    = DateTimeOffset
-    | DateTimeLocal
-    | DateLocal
-    | TimeLocal
+type ParsedValue
+    = PVString String
+    | PVInteger Int
+    | PVFloat Float
+    | PVBoolean Bool
+    | PVDateTime Rfc3339.DateTime
+    | PVArray (Array ParsedValue)
+    | PVInlineTable (List ( ParsedKey, ParsedValue ))
 
 
 {-| -}
-type alias Key =
+type alias ParsedKey =
     ( String, List String )
 
 
 {-| -}
 type Error
     = InvalidComment String
+    | DuplicateKey String
+    | TriedToChangeValue { from : String, to : String }
     | Other (Parser.Advanced.DeadEnd Context Problem)
 
 
@@ -71,6 +79,9 @@ type alias Parser a =
 
 type Context
     = Context_TODO
+    | ParsingDate
+    | ParsingTime
+    | ParsingOffset
 
 
 type Problem
@@ -122,6 +133,24 @@ type Problem
     | ExpectingInlineTableEnd
     | UnknownValue { start : ( Int, Int ), end : ( Int, Int ) }
     | ExpectingEndOfFile
+      --
+    | ExpectedDateSeparator
+    | ExpectedDateTimeSeparator
+    | ExpectedTimeSeparator
+    | ExpectedOffsetSeparator
+    | InvalidMonth
+    | DayTooLarge Int
+    | ExpectedZuluOffset
+    | ExpectedOffsetSign
+    | ExpectedFractionalSecondSeparator
+    | ExpectedDigit
+    | ExpectedAFloat
+    | ExpectedAnInt
+    | InvalidNegativeDigits
+    | InvalidHour
+    | InvalidMinute
+    | InvalidSecond
+    | InvalidDay
 
 
 {-| -}
@@ -129,6 +158,249 @@ parse : String -> Result (List Error) Toml
 parse source =
     Parser.Advanced.run tomlParser source
         |> Result.mapError (List.map (problemToError source))
+        |> Result.andThen
+            (Util.List.foldlResult
+                (\expr acc ->
+                    case expr of
+                        CommentExpr _ ->
+                            Ok acc
+
+                        KeyValueExpr keyValue _ ->
+                            insertKeyValuePair keyValue acc
+
+                        TableExpr table _ ->
+                            case table of
+                                StandardTable ( key, restKeys ) keyValues ->
+                                    List.foldl
+                                        (\tableKeyValue accum ->
+                                            case ( insertKeyValuePair tableKeyValue Dict.empty, accum ) of
+                                                ( Ok tbl, Ok a ) ->
+                                                    updateOrInsertOrError
+                                                        ( key
+                                                        , restKeys
+                                                        , Array (Array.fromList [ Table tbl ])
+                                                        )
+                                                        a
+                                                        |> Result.mapError List.singleton
+
+                                                ( Ok _, Err _ ) ->
+                                                    accum
+
+                                                ( Err e, Ok _ ) ->
+                                                    Err e
+
+                                                ( Err e, Err errs ) ->
+                                                    Err (errs ++ e)
+                                        )
+                                        (Ok acc)
+                                        keyValues
+
+                                ArrayTable ( key, restKeys ) keyValues ->
+                                    List.foldl
+                                        (\tableKeyValue accum ->
+                                            case ( insertKeyValuePair tableKeyValue Dict.empty, accum ) of
+                                                ( Ok tbl, Ok a ) ->
+                                                    updateOrInsertOrError
+                                                        ( key
+                                                        , restKeys
+                                                        , Array (Array.fromList [ Table tbl ])
+                                                        )
+                                                        a
+                                                        |> Result.mapError List.singleton
+
+                                                ( Ok _, Err _ ) ->
+                                                    accum
+
+                                                ( Err e, Ok _ ) ->
+                                                    Err e
+
+                                                ( Err e, Err errs ) ->
+                                                    Err (errs ++ e)
+                                        )
+                                        (Ok acc)
+                                        keyValues
+                )
+                (Ok Dict.empty)
+            )
+
+
+insertKeyValuePair : ( ParsedKey, ParsedValue ) -> Toml -> Result (List Error) Toml
+insertKeyValuePair ( key, value ) toml =
+    case mapValue value of
+        Err errs ->
+            Err errs
+
+        Ok val ->
+            case key of
+                ( first, [] ) ->
+                    insertOrError ( first, val ) toml
+
+                ( first, rest ) ->
+                    case List.reverse rest of
+                        [] ->
+                            insertOrError ( first, val ) toml
+
+                        deepKey :: restKeys ->
+                            let
+                                nestedTable =
+                                    List.foldr
+                                        (\k t ->
+                                            Table (Dict.singleton k t)
+                                        )
+                                        (Table (Dict.singleton deepKey val))
+                                        restKeys
+                            in
+                            insertOrError ( first, nestedTable ) toml
+
+
+mapValue : ParsedValue -> Result (List Error) Value
+mapValue pv =
+    case pv of
+        PVString str ->
+            Ok (String str)
+
+        PVInteger i ->
+            Ok (Integer i)
+
+        PVFloat f ->
+            Ok (Float f)
+
+        PVBoolean b ->
+            Ok (Boolean b)
+
+        PVDateTime dateTime ->
+            Ok (DateTime dateTime)
+
+        PVArray arr ->
+            let
+                ( mappedVals, errs ) =
+                    arr
+                        |> Array.toList
+                        |> List.map mapValue
+                        |> Util.Result.combine
+            in
+            case errs of
+                [] ->
+                    Ok (Array (Array.fromList mappedVals))
+
+                _ ->
+                    Err (List.concat errs)
+
+        PVInlineTable keyVals ->
+            case mapTableVal keyVals of
+                Ok mappedVals ->
+                    Ok (Table (Dict.fromList mappedVals))
+
+                Err errs ->
+                    Err errs
+
+
+mapTableVal : List ( ParsedKey, ParsedValue ) -> Result (List Error) (List ( Key, Value ))
+mapTableVal parsedKeyValues =
+    mapTableValHelper parsedKeyValues ( [], [] )
+
+
+mapTableValHelper : List ( ParsedKey, ParsedValue ) -> ( List Error, List ( Key, Value ) ) -> Result (List Error) (List ( Key, Value ))
+mapTableValHelper parsedKeyValues ( errs, oks ) =
+    case parsedKeyValues of
+        [] ->
+            case errs of
+                [] ->
+                    Ok (List.reverse oks)
+
+                _ ->
+                    Err errs
+
+        ( ( key, remKeys ), value ) :: restKeyValues ->
+            case mapValue value of
+                Err err ->
+                    mapTableValHelper restKeyValues ( err ++ errs, oks )
+
+                Ok mpdVal ->
+                    case List.reverse remKeys of
+                        [] ->
+                            mapTableValHelper restKeyValues
+                                ( errs
+                                , ( key, mpdVal ) :: oks
+                                )
+
+                        deepKey :: restKeys ->
+                            let
+                                nestedTable =
+                                    List.foldr
+                                        (\k t ->
+                                            Table (Dict.singleton k t)
+                                        )
+                                        (Table (Dict.singleton deepKey mpdVal))
+                                        restKeys
+                            in
+                            mapTableValHelper restKeyValues
+                                ( errs
+                                , ( key, nestedTable ) :: oks
+                                )
+
+
+insertOrError : ( Key, Value ) -> Toml -> Result (List Error) Toml
+insertOrError ( key, value ) toml =
+    case Dict.get key toml of
+        Just _ ->
+            Err [ DuplicateKey key ]
+
+        Nothing ->
+            Ok (Dict.insert key value toml)
+
+
+updateOrInsertOrError : ( Key, List Key, Value ) -> Toml -> Result Error Toml
+updateOrInsertOrError ( key, restKeys, value ) toml =
+    -- -- updateOrInsertOrErrorHelper key [] toml
+    -- case restKeys of
+    --     [] ->
+    -- Util.List.updateOrPush
+    --     (\val -> Debug.todo "")
+    --     value
+    --     toml
+    case Dict.get key toml of
+        Nothing ->
+            case restKeys of
+                [] ->
+                    Ok (Dict.insert key value toml)
+
+                nextKey :: remKeys ->
+                    case updateOrInsertOrError ( nextKey, remKeys, value ) Dict.empty of
+                        Ok v ->
+                            Ok (Dict.insert key (Table v) toml)
+
+                        Err err ->
+                            Err err
+
+        Just (String _) ->
+            Err (TriedToChangeValue { from = "String", to = "???" })
+
+        Just (Integer _) ->
+            Err (TriedToChangeValue { from = "Integer", to = "???" })
+
+        Just (Float _) ->
+            Err (TriedToChangeValue { from = "Float", to = "???" })
+
+        Just (Boolean _) ->
+            Err (TriedToChangeValue { from = "Boolean", to = "???" })
+
+        Just (DateTime _) ->
+            Err (TriedToChangeValue { from = "DateTime", to = "???" })
+
+        Just (Array _) ->
+            Err (TriedToChangeValue { from = "Array", to = "???" })
+
+        Just (Table table) ->
+            case restKeys of
+                [] ->
+                    Err (TriedToChangeValue { from = "Array", to = "???" })
+
+                nextKey :: [] ->
+                    Ok (Dict.insert key (Table (Dict.insert nextKey value table)) toml)
+
+                nextKey :: remKeys ->
+                    Debug.todo ""
 
 
 problemToError : String -> Parser.Advanced.DeadEnd Context Problem -> Error
@@ -157,7 +429,7 @@ problemToError source deadEnd =
             Other deadEnd
 
 
-tomlParser : Parser Toml
+tomlParser : Parser ParsedToml
 tomlParser =
     Parser.Advanced.succeed List.reverse
         |. spacesParser
@@ -180,8 +452,8 @@ tomlBodyParser revExpressions =
 
 type Expression
     = CommentExpr (Maybe String)
-    | KeyValueExpr ( Key, Value ) (Maybe String)
-    | TableExpr Table (Maybe String)
+    | KeyValueExpr ( ParsedKey, ParsedValue ) (Maybe String)
+    | TableExpr PVTable (Maybe String)
 
 
 expressionParser : Parser Expression
@@ -393,7 +665,7 @@ disallowedCommentChars =
     ]
 
 
-keyValueParser : Parser ( Key, Value )
+keyValueParser : Parser ( ParsedKey, ParsedValue )
 keyValueParser =
     Parser.Advanced.succeed Tuple.pair
         |. spacesParser
@@ -404,7 +676,7 @@ keyValueParser =
         |= valueParser
 
 
-dottedkeyParser : Parser Key
+dottedkeyParser : Parser ParsedKey
 dottedkeyParser =
     Parser.Advanced.succeed Tuple.pair
         |= keyParser
@@ -444,9 +716,7 @@ quotedKeyParser : Parser String
 quotedKeyParser =
     Parser.Advanced.oneOf
         [ basicStringParser
-            |> Parser.Advanced.map (\key -> "\"" ++ key ++ "\"")
         , literalStringParser
-            |> Parser.Advanced.map (\key -> "'" ++ key ++ "'")
         ]
 
 
@@ -454,16 +724,17 @@ quotedKeyParser =
 -- VALUES
 
 
-valueParser : Parser Value
+valueParser : Parser ParsedValue
 valueParser =
     Parser.Advanced.succeed identity
         |= Parser.Advanced.oneOf valueParsers
         |. spacesParser
 
 
-valueParsers : List (Parser Value)
+valueParsers : List (Parser ParsedValue)
 valueParsers =
-    [ numberParser
+    [ dateTimeParser
+    , numberParser
     , booleanParser
     , stringParser
     , arrayParser
@@ -475,9 +746,9 @@ valueParsers =
 -- STRINGS
 
 
-stringParser : Parser Value
+stringParser : Parser ParsedValue
 stringParser =
-    Parser.Advanced.succeed String
+    Parser.Advanced.succeed PVString
         |= Parser.Advanced.oneOf
             [ multilineBasicStringParser
                 |> Parser.Advanced.backtrackable
@@ -706,7 +977,7 @@ multilineLiteralStringParserHelper revChunks =
 -- NUMBERS
 
 
-numberParser : Parser Value
+numberParser : Parser ParsedValue
 numberParser =
     Parser.Advanced.oneOf
         [ floatParser
@@ -714,11 +985,11 @@ numberParser =
         ]
 
 
-integerParser : Parser Value
+integerParser : Parser ParsedValue
 integerParser =
     Parser.Advanced.succeed
         (\shouldNegate value ->
-            Integer
+            PVInteger
                 (if shouldNegate then
                     negate value
 
@@ -870,13 +1141,13 @@ binaryIntParser =
             )
 
 
-floatParser : Parser Value
+floatParser : Parser ParsedValue
 floatParser =
     Parser.Advanced.succeed
         (\shouldNegate value ->
             case value of
                 Err i ->
-                    Integer
+                    PVInteger
                         (if shouldNegate then
                             negate i
 
@@ -885,7 +1156,7 @@ floatParser =
                         )
 
                 Ok f ->
-                    Float
+                    PVFloat
                         (if shouldNegate then
                             negate f
 
@@ -1003,12 +1274,12 @@ negateParser =
 -- BOOLEAN
 
 
-booleanParser : Parser Value
+booleanParser : Parser ParsedValue
 booleanParser =
     Parser.Advanced.oneOf
-        [ Parser.Advanced.succeed (Boolean True)
+        [ Parser.Advanced.succeed (PVBoolean True)
             |. Parser.Advanced.token (Parser.Advanced.Token "true" ExpectingTrue)
-        , Parser.Advanced.succeed (Boolean False)
+        , Parser.Advanced.succeed (PVBoolean False)
             |. Parser.Advanced.token (Parser.Advanced.Token "false" ExpectingFalse)
         ]
 
@@ -1018,7 +1289,7 @@ booleanParser =
 -- ARRAY
 
 
-arrayParser : Parser Value
+arrayParser : Parser ParsedValue
 arrayParser =
     Parser.Advanced.succeed identity
         |. Parser.Advanced.token (Parser.Advanced.Token "[" ExpectingArrayStart)
@@ -1030,7 +1301,7 @@ arrayParser =
                         revValues
                             |> List.reverse
                             |> Array.fromList
-                            |> Array
+                            |> PVArray
                             |> Parser.Advanced.succeed
 
                     _ ->
@@ -1102,9 +1373,9 @@ arrayParserHelper builder =
 
 
 type ArrayBuilder
-    = LookingForEndOrValue (List Value)
-    | LookingForEndOrSeprator (List Value)
-    | Complete (List Value)
+    = LookingForEndOrValue (List ParsedValue)
+    | LookingForEndOrSeprator (List ParsedValue)
+    | Complete (List ParsedValue)
     | ArrayError
 
 
@@ -1112,9 +1383,9 @@ type ArrayBuilder
 -- INLINE TABLE
 
 
-inlineTableParser : Parser Value
+inlineTableParser : Parser ParsedValue
 inlineTableParser =
-    Parser.Advanced.succeed InlineTable
+    Parser.Advanced.succeed PVInlineTable
         |= Parser.Advanced.sequence
             { start = Parser.Advanced.Token "{" ExpectingInlineTableStart
             , item =
@@ -1133,30 +1404,15 @@ inlineTableParser =
 
 
 
--- Parser.Advanced.succeed identity
---     |. Parser.Advanced.token (Parser.Advanced.Token "{" ExpectingArrayStart)
---     |= Parser.Advanced.loop (LookingForEndOrValue []) arrayParserHelper
---     |> Parser.Advanced.andThen
---         (\builder ->
---             case builder of
---                 Complete revValues ->
---                     revValues
---                         |> List.reverse
---                         |> Array.fromList
---                         |> Array
---                         |> Parser.Advanced.succeed
---                 _ ->
---                     Parser.Advanced.problem (Debug.todo "")
---         )
 -- TABLE
 
 
-type Table
-    = StandardTable Key (List ( Key, Value ))
-    | ArrayTable Key (List ( Key, Value ))
+type PVTable
+    = StandardTable ParsedKey (List ( ParsedKey, ParsedValue ))
+    | ArrayTable ParsedKey (List ( ParsedKey, ParsedValue ))
 
 
-tableParser : Parser Table
+tableParser : Parser PVTable
 tableParser =
     Parser.Advanced.oneOf
         [ arrayTableParser
@@ -1164,7 +1420,7 @@ tableParser =
         ]
 
 
-arrayTableParser : Parser Table
+arrayTableParser : Parser PVTable
 arrayTableParser =
     Parser.Advanced.succeed ArrayTable
         |. Parser.Advanced.token (Parser.Advanced.Token "[[" ExpectingArrayTableStart)
@@ -1178,7 +1434,7 @@ arrayTableParser =
 -- |> Parser.Advanced.backtrackable
 
 
-standardTableParser : Parser Table
+standardTableParser : Parser PVTable
 standardTableParser =
     Parser.Advanced.succeed StandardTable
         |. Parser.Advanced.token (Parser.Advanced.Token "[" ExpectingStandardTableStart)
@@ -1188,7 +1444,7 @@ standardTableParser =
         |= Parser.Advanced.loop [] tableValuesParser
 
 
-tableValuesParser : List ( Key, Value ) -> Parser (Parser.Advanced.Step (List ( Key, Value )) (List ( Key, Value )))
+tableValuesParser : List ( ParsedKey, ParsedValue ) -> Parser (Parser.Advanced.Step (List ( ParsedKey, ParsedValue )) (List ( ParsedKey, ParsedValue )))
 tableValuesParser revValues =
     Parser.Advanced.oneOf
         [ Parser.Advanced.succeed (\value -> Parser.Advanced.Loop (value :: revValues))
@@ -1196,3 +1452,402 @@ tableValuesParser revValues =
             |> Parser.Advanced.backtrackable
         , Parser.Advanced.succeed (Parser.Advanced.Done (List.reverse revValues))
         ]
+
+
+
+-- DATE TIME
+--
+-- The below is borrowed from wolfadex/elm-rfc3339
+
+
+dateTimeParser : Parser ParsedValue
+dateTimeParser =
+    Parser.Advanced.succeed PVDateTime
+        |= Parser.Advanced.oneOf
+            [ rfc3339DateTimeParser
+                |> Parser.Advanced.backtrackable
+            , Parser.Advanced.map Rfc3339.TimeLocal timeLocalParser
+                |> Parser.Advanced.backtrackable
+            ]
+
+
+rfc3339DateTimeParser : Parser Rfc3339.DateTime
+rfc3339DateTimeParser =
+    Parser.Advanced.succeed
+        (\date maybeTimeOffset ->
+            case maybeTimeOffset of
+                Nothing ->
+                    Rfc3339.DateLocal date
+
+                Just ( time, maybeOffset ) ->
+                    case maybeOffset of
+                        Nothing ->
+                            Rfc3339.DateTimeLocal
+                                { year = date.year
+                                , month = date.month
+                                , day = date.day
+                                , hour = time.hour
+                                , minute = time.minute
+                                , second = time.second
+                                }
+
+                        Just offset ->
+                            Rfc3339.DateTimeOffset
+                                { year = date.year
+                                , month = date.month
+                                , day = date.day
+                                , hour = time.hour
+                                , minute = time.minute
+                                , second = time.second
+                                , offset = offset
+                                }
+        )
+        |= dateParser
+        |= Parser.Advanced.oneOf
+            [ Parser.Advanced.succeed (\time maybeOffset -> Just ( time, maybeOffset ))
+                |. Parser.Advanced.oneOf
+                    [ Parser.Advanced.token (Parser.Advanced.Token "T" ExpectedDateTimeSeparator)
+                    , Parser.Advanced.token (Parser.Advanced.Token "t" ExpectedDateTimeSeparator)
+                    , Parser.Advanced.token (Parser.Advanced.Token " " ExpectedDateTimeSeparator)
+                        |> Parser.Advanced.backtrackable
+                    ]
+                |= timeLocalParser
+                |= Parser.Advanced.oneOf
+                    [ Parser.Advanced.map Just offsetParser
+                    , Parser.Advanced.succeed Nothing
+                    ]
+            , Parser.Advanced.succeed Nothing
+            ]
+        |> Parser.Advanced.andThen
+            (\dateTime ->
+                case dateTime of
+                    Rfc3339.TimeLocal _ ->
+                        Parser.Advanced.succeed dateTime
+
+                    Rfc3339.DateLocal date ->
+                        let
+                            maxDays : Int
+                            maxDays =
+                                daysInMonth date
+                        in
+                        if date.day > maxDays then
+                            Parser.Advanced.problem (DayTooLarge maxDays)
+
+                        else
+                            Parser.Advanced.succeed dateTime
+
+                    Rfc3339.DateTimeLocal date ->
+                        let
+                            maxDays : Int
+                            maxDays =
+                                daysInMonth date
+                        in
+                        if date.day > maxDays then
+                            Parser.Advanced.problem (DayTooLarge maxDays)
+
+                        else
+                            Parser.Advanced.succeed dateTime
+
+                    Rfc3339.DateTimeOffset date ->
+                        let
+                            maxDays : Int
+                            maxDays =
+                                daysInMonth date
+                        in
+                        if date.day > maxDays then
+                            Parser.Advanced.problem (DayTooLarge maxDays)
+
+                        else
+                            Parser.Advanced.succeed dateTime
+            )
+
+
+dateParser : Parser { year : Int, month : Time.Month, day : Int }
+dateParser =
+    Parser.Advanced.succeed
+        (\year month day ->
+            { year = year
+            , month = month
+            , day = day
+            }
+        )
+        |= parseDigits 4
+        |. Parser.Advanced.token (Parser.Advanced.Token "-" ExpectedDateSeparator)
+        |= (parseDigits 2
+                |> Parser.Advanced.andThen
+                    (\int ->
+                        case intToMonth int of
+                            Nothing ->
+                                Parser.Advanced.problem InvalidMonth
+
+                            Just month ->
+                                Parser.Advanced.succeed month
+                    )
+           )
+        |. Parser.Advanced.token (Parser.Advanced.Token "-" ExpectedDateSeparator)
+        |= parseDigitsInRange 2 { min = 1, max = 31 } InvalidDay
+        |> Parser.Advanced.inContext ParsingDate
+
+
+offsetParser : Parser { hour : Int, minute : Int }
+offsetParser =
+    Parser.Advanced.oneOf
+        [ Parser.Advanced.succeed { hour = 0, minute = 0 }
+            |. Parser.Advanced.token (Parser.Advanced.Token "Z" ExpectedZuluOffset)
+        , Parser.Advanced.succeed (\sign hour minute -> { hour = sign hour, minute = minute })
+            |= Parser.Advanced.oneOf
+                [ Parser.Advanced.succeed identity
+                    |. Parser.Advanced.token (Parser.Advanced.Token "+" ExpectedOffsetSign)
+                , Parser.Advanced.succeed negate
+                    |. Parser.Advanced.token (Parser.Advanced.Token "-" ExpectedOffsetSign)
+                ]
+            |= hourParser
+            |. Parser.Advanced.token (Parser.Advanced.Token ":" ExpectedOffsetSeparator)
+            |= minuteParser
+        ]
+        |> Parser.Advanced.inContext ParsingOffset
+
+
+timeLocalParser :
+    Parser
+        { hour : Int
+        , minute : Int
+        , second : Float
+        }
+timeLocalParser =
+    Parser.Advanced.succeed
+        (\hour minute second ->
+            { hour = hour
+            , minute = minute
+            , second = second
+            }
+        )
+        |= hourParser
+        |. Parser.Advanced.token (Parser.Advanced.Token ":" ExpectedTimeSeparator)
+        |= minuteParser
+        |. Parser.Advanced.token (Parser.Advanced.Token ":" ExpectedTimeSeparator)
+        |= (Parser.Advanced.succeed Tuple.pair
+                |= parseDigitsInRange 2 { min = 0, max = 59 } InvalidSecond
+                |= Parser.Advanced.oneOf
+                    [ Parser.Advanced.succeed Just
+                        |. Parser.Advanced.token (Parser.Advanced.Token "." ExpectedFractionalSecondSeparator)
+                        |= (Parser.Advanced.succeed ()
+                                |. Parser.Advanced.chompIf Char.isDigit ExpectedDigit
+                                |. Parser.Advanced.chompWhile Char.isDigit
+                                |> Parser.Advanced.getChompedString
+                           )
+                    , Parser.Advanced.succeed Nothing
+                    ]
+                |> Parser.Advanced.andThen
+                    (\( second, fracSeconds ) ->
+                        case fracSeconds of
+                            Nothing ->
+                                Parser.Advanced.succeed (toFloat second)
+
+                            Just frac ->
+                                case String.toFloat (String.fromInt second ++ "." ++ frac) of
+                                    Nothing ->
+                                        Parser.Advanced.problem ExpectedAFloat
+
+                                    Just f ->
+                                        Parser.Advanced.succeed f
+                    )
+           )
+        |> Parser.Advanced.inContext ParsingTime
+
+
+parseDigits : Int -> Parser Int
+parseDigits size =
+    Parser.Advanced.loop ( size, [] ) parseDigitsHelper
+        |> Parser.Advanced.andThen
+            (\digits ->
+                case String.toInt digits of
+                    Nothing ->
+                        Parser.Advanced.problem ExpectedAnInt
+
+                    Just i ->
+                        Parser.Advanced.succeed i
+            )
+
+
+parseDigitsInRange : Int -> { min : Int, max : Int } -> Problem -> Parser Int
+parseDigitsInRange size limits limitProblem =
+    Parser.Advanced.loop ( size, [] ) parseDigitsHelper
+        |> Parser.Advanced.andThen
+            (\digits ->
+                case String.toInt digits of
+                    Nothing ->
+                        Parser.Advanced.problem ExpectedAnInt
+
+                    Just i ->
+                        if i < limits.min then
+                            Parser.Advanced.problem limitProblem
+
+                        else if i > limits.max then
+                            Parser.Advanced.problem limitProblem
+
+                        else
+                            Parser.Advanced.succeed i
+            )
+
+
+parseDigitsHelper : ( Int, List String ) -> Parser (Parser.Advanced.Step ( Int, List String ) String)
+parseDigitsHelper ( leftToChomp, revDigits ) =
+    if leftToChomp < 0 then
+        Parser.Advanced.problem InvalidNegativeDigits
+
+    else if leftToChomp > 0 then
+        Parser.Advanced.succeed ()
+            |. Parser.Advanced.chompIf Char.isDigit ExpectedDigit
+            |> Parser.Advanced.getChompedString
+            |> Parser.Advanced.map (\digit -> Parser.Advanced.Loop ( leftToChomp - 1, digit :: revDigits ))
+
+    else
+        Parser.Advanced.succeed (Parser.Advanced.Done (String.concat (List.reverse revDigits)))
+
+
+intToMonth : Int -> Maybe Time.Month
+intToMonth i =
+    case i of
+        1 ->
+            Just Time.Jan
+
+        2 ->
+            Just Time.Feb
+
+        3 ->
+            Just Time.Mar
+
+        4 ->
+            Just Time.Apr
+
+        5 ->
+            Just Time.May
+
+        6 ->
+            Just Time.Jun
+
+        7 ->
+            Just Time.Jul
+
+        8 ->
+            Just Time.Aug
+
+        9 ->
+            Just Time.Sep
+
+        10 ->
+            Just Time.Oct
+
+        11 ->
+            Just Time.Nov
+
+        12 ->
+            Just Time.Dec
+
+        _ ->
+            Nothing
+
+
+monthToInt : Time.Month -> Int
+monthToInt month =
+    case month of
+        Time.Jan ->
+            1
+
+        Time.Feb ->
+            2
+
+        Time.Mar ->
+            3
+
+        Time.Apr ->
+            4
+
+        Time.May ->
+            5
+
+        Time.Jun ->
+            6
+
+        Time.Jul ->
+            7
+
+        Time.Aug ->
+            8
+
+        Time.Sep ->
+            9
+
+        Time.Oct ->
+            10
+
+        Time.Nov ->
+            11
+
+        Time.Dec ->
+            12
+
+
+hourParser : Parser Int
+hourParser =
+    parseDigitsInRange 2 { min = 0, max = 23 } InvalidHour
+
+
+minuteParser : Parser Int
+minuteParser =
+    parseDigitsInRange 2 { min = 0, max = 59 } InvalidMinute
+
+
+isLeapYear : Int -> Bool
+isLeapYear year =
+    modBy 400 year == 0 || (modBy 4 year == 0 && (modBy 100 year /= 0))
+
+
+daysInMonth : { a | year : Int, month : Time.Month } -> Int
+daysInMonth date =
+    case date.month of
+        Time.Jan ->
+            31
+
+        Time.Feb ->
+            if isLeapYear date.year then
+                29
+
+            else
+                28
+
+        Time.Mar ->
+            31
+
+        Time.Apr ->
+            30
+
+        Time.May ->
+            31
+
+        Time.Jun ->
+            30
+
+        Time.Jul ->
+            31
+
+        Time.Aug ->
+            31
+
+        Time.Sep ->
+            30
+
+        Time.Oct ->
+            31
+
+        Time.Nov ->
+            30
+
+        Time.Dec ->
+            31
+
+
+padInt2 : Int -> String
+padInt2 i =
+    String.padLeft 2 '0' (String.fromInt i)
